@@ -89,7 +89,7 @@ def unpatchify_4d(patches, original_shape):
     data = data.reshape(T, C, H, W)
     return data
 
-patch_size = 256
+patch_size = 64
 
 x_patches = patchify_4d(x_train, patch_size)
 y_patches = patchify_4d(y_train, patch_size)
@@ -131,36 +131,117 @@ class ncDataset(Dataset):
 
     def __len__(self):
         return len(self.data)
-    
-def train(model, train_dataloader, val_dataloader, criterion, optimizer, device):
+
+def train(model, train_dataloader, val_dataloader, criterion, optimizer, device, epoch=None):
     model.train()
     train_loss = 0.0
-    for batch in train_dataloader:
-        lr, hr = batch
+
+    train_loader_tqdm = tqdm(train_dataloader, desc=f"Training Epoch {epoch}", leave=False)
+    for batch_idx, (lr, hr) in enumerate(train_loader_tqdm):
         lr, hr = lr.to(device), hr.to(device)
         optimizer.zero_grad()
         sr = model(lr)
         loss = criterion(sr, hr)
         loss.backward()
         optimizer.step()
-        train_loss += loss.item()
+
+        batch_loss = loss.item()
+        train_loss += batch_loss
+
+        # Log batch loss to WandB
+        if epoch is not None:
+            wandb.log({"batch_train_loss": batch_loss, "epoch": epoch})
+
+        train_loader_tqdm.set_postfix(batch_loss=batch_loss)
 
     train_loss /= len(train_dataloader)
 
     # Validation
     model.eval()
     val_loss = 0.0
+    val_loader_tqdm = tqdm(val_dataloader, desc=f"Validation Epoch {epoch}", leave=False)
     with torch.no_grad():
-        for batch in val_dataloader:
-            lr, hr = batch
+        for lr, hr in val_loader_tqdm:
             lr, hr = lr.to(device), hr.to(device)
             sr = model(lr)
             loss = criterion(sr, hr)
-            val_loss += loss.item()
+            batch_loss = loss.item()
+            val_loss += batch_loss
+            val_loader_tqdm.set_postfix(batch_loss=batch_loss)
 
     val_loss /= len(val_dataloader)
 
     return train_loss, val_loss
+
+
+# def train(model, train_dataloader, val_dataloader, criterion, optimizer, device, epoch):
+#     model.train()
+#     train_loss = 0.0
+
+#     # tqdm for train dataloader
+#     train_loader_tqdm = tqdm(train_dataloader, desc="Training", leave=False)
+#     for lr, hr in train_loader_tqdm:
+#         lr, hr = lr.to(device), hr.to(device)
+#         optimizer.zero_grad()
+#         sr = model(lr)
+#         loss = criterion(sr, hr)
+#         loss.backward()
+#         optimizer.step()
+
+#         batch_loss = loss.item()
+#         train_loss += batch_loss
+
+#         train_loader_tqdm.set_postfix(batch_loss=batch_loss)
+
+#     train_loss /= len(train_dataloader)
+
+#     # Validation
+#     model.eval()
+#     val_loss = 0.0
+#     val_loader_tqdm = tqdm(val_dataloader, desc="Validation", leave=False)
+#     with torch.no_grad():
+#         for lr, hr in val_loader_tqdm:
+#             lr, hr = lr.to(device), hr.to(device)
+#             sr = model(lr)
+#             loss = criterion(sr, hr)
+#             batch_loss = loss.item()
+#             val_loss += batch_loss
+#             val_loader_tqdm.set_postfix(batch_loss=batch_loss)
+
+#     val_loss /= len(val_dataloader)
+
+#     return train_loss, val_loss
+
+    
+# def train(model, train_dataloader, val_dataloader, criterion, optimizer, device):
+#     model.train()
+#     train_loss = 0.0
+#     for batch in train_dataloader:
+#         lr, hr = batch
+#         lr, hr = lr.to(device), hr.to(device)
+#         optimizer.zero_grad()
+#         sr = model(lr)
+#         loss = criterion(sr, hr)
+#         loss.backward()
+#         optimizer.step()
+#         train_loss += loss.item()
+
+#     train_loss /= len(train_dataloader)
+
+#     # Validation
+#     model.eval()
+#     val_loss = 0.0
+#     with torch.no_grad():
+#         for batch in val_dataloader:
+#             lr, hr = batch
+#             lr, hr = lr.to(device), hr.to(device)
+#             sr = model(lr)
+#             loss = criterion(sr, hr)
+#             val_loss += loss.item()
+
+#     val_loss /= len(val_dataloader)
+
+#     return train_loss, val_loss
 
 import math
 import torch
@@ -999,8 +1080,8 @@ class SwinIR(nn.Module):
 upscale = 1
 window_size = 8
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-height = 256 #(1024 // upscale // window_size + 1) * window_size
-width = 256 #(720 // upscale // window_size + 1) * window_size
+height = 64 #(1024 // upscale // window_size + 1) * window_size
+width = 64 #(720 // upscale // window_size + 1) * window_size
 model = SwinIR(upscale=1, img_size=(height, width),in_chans=2,
                window_size=window_size, img_range=1., depths=[6, 6, 6, 6],
                embed_dim=60, num_heads=[6, 6, 6, 6], mlp_ratio=2, upsampler='pixelshuffledirect').to(device)
@@ -1020,8 +1101,8 @@ x_patches_reordered = np.transpose(x_patches, (0, 2, 1, 3, 4))  # (T, N, C, H, W
 y_patches_reordered = np.transpose(y_patches, (0, 2, 1, 3, 4))
 
 # Reshape: (T*N, C, H, W)
-x_train_patches = x_patches_reordered.reshape(-1, 2, 256, 256)
-y_train_patches = y_patches_reordered.reshape(-1, 2, 256, 256)
+x_train_patches = x_patches_reordered.reshape(-1, 2, 64, 64)
+y_train_patches = y_patches_reordered.reshape(-1, 2, 64, 64)
 
 
 print(x_train_patches.shape)
@@ -1131,7 +1212,7 @@ criterion = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=0.001)
 if is_train:
     for epoch in tqdm(range(1, num_epochs + 1)):
-        train_loss, val_loss = train(model, train_dataloader, val_dataloader, criterion, optimizer, device)
+        train_loss, val_loss = train(model, train_dataloader, val_dataloader, criterion, optimizer, device, epoch)
     # Log losses to TensorBoard
         
 
